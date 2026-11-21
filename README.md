@@ -189,7 +189,7 @@ release.bat
 или с явной версией:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build_release.ps1 -Version 1.2.0
+powershell -ExecutionPolicy Bypass -File scripts\build_release.ps1 -Version 1.2.1
 ```
 
 Результат в папке `release` (в git не попадает):
@@ -211,12 +211,12 @@ powershell -ExecutionPolicy Bypass -File scripts\build_release.ps1 -Version 1.2.
 ## CI и релизы
 
 `.github/workflows/build.yml` собирает проект на `windows-latest` при каждом push,
-а на теге вида `v1.2.0` дополнительно публикует GitHub Release с установщиком,
+а на теге вида `v1.2.1` дополнительно публикует GitHub Release с установщиком,
 портативным ZIP и `SHA256SUMS.txt`.
 
 ```bat
-git tag v1.2.0
-git push origin v1.2.0
+git tag v1.2.1
+git push origin v1.2.1
 ```
 
 Сборка без тега доступна в разделе **Actions → build → Artifacts**.

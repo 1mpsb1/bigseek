@@ -9,7 +9,7 @@
 
     Examples:
       powershell -ExecutionPolicy Bypass -File scripts\build_release.ps1
-      powershell -ExecutionPolicy Bypass -File scripts\build_release.ps1 -Version 1.2.0
+      powershell -ExecutionPolicy Bypass -File scripts\build_release.ps1 -Version 1.2.1
       powershell -ExecutionPolicy Bypass -File scripts\build_release.ps1 -SkipInstaller
 #>
 [CmdletBinding()]
@@ -61,7 +61,7 @@ if (-not $Version) {
         $Version = (Get-Content $versionFile -Raw).Trim()
     }
 }
-if (-not $Version) { $Version = "1.2.0" }
+if (-not $Version) { $Version = "1.2.1" }
 
 $dist = Join-Path $root "dist\BigSeek Desktop"
 $exe = Join-Path $dist "BigSeek Desktop.exe"

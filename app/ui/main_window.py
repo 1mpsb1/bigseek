@@ -97,6 +97,14 @@ class MainWindow(QMainWindow):
         self.save_timer.setInterval(1200)
         self.save_timer.timeout.connect(self._flush)
 
+        # QtWebEngine can keep its compositor surface at an old offset after
+        # the view was moved; a delayed nudge forces a clean repaint.
+        self._repaint_timer = QTimer(self)
+        self._repaint_timer.setSingleShot(True)
+        self._repaint_timer.setInterval(250)
+        self._repaint_timer.timeout.connect(self._repaint_web_area)
+        self._geometry_checked = False
+
         self.setWindowTitle("BigSeek Desktop")
         self.resize(1360, 900)
         if self.settings.window_geometry:
@@ -198,6 +206,7 @@ class MainWindow(QMainWindow):
             self.settings.sidebar_width = sizes[0]
             self.settings.sidebar_visible = True
             self._side_save_timer.start()
+        self._repaint_timer.start()
 
     def toggle_sidebar(self) -> None:
         visible = not self.sidebar.isVisible()
@@ -209,9 +218,75 @@ class MainWindow(QMainWindow):
         self._set_sidebar_visible(visible)
         self._sync_sidebar_button(visible)
         self.settings.save(self.root / "settings.json")
+        self._repaint_timer.start()
         self.statusBar().showMessage(
             "Панель сессий показана" if visible else "Панель сессий скрыта", 2500
         )
+
+    # ------------------------------------------------------- window geometry
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self._geometry_checked:
+            return
+        self._geometry_checked = True
+        self._clamp_to_screen()
+        handle = self.windowHandle()
+        if handle is not None:
+            handle.screenChanged.connect(self._on_screen_changed)
+
+    def _on_screen_changed(self, _screen) -> None:
+        self._clamp_to_screen()
+        self._repaint_timer.start()
+
+    def _clamp_to_screen(self) -> None:
+        """Never let a restored window exceed the current monitor.
+
+        A geometry saved on a larger screen (or at another DPI) used to make
+        the window wider than the desktop; the page then looked shifted to
+        the right with an empty strip on the left.
+        """
+        if self.isMaximized() or self.isFullScreen():
+            return
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        available = screen.availableGeometry()
+        geo = self.geometry()
+        width = min(geo.width(), available.width())
+        height = min(geo.height(), available.height())
+        x = min(max(geo.x(), available.x()), available.x() + available.width() - width)
+        y = min(max(geo.y(), available.y()), available.y() + available.height() - height)
+        if (width, height, x, y) != (geo.width(), geo.height(), geo.x(), geo.y()):
+            self.setGeometry(x, y, width, height)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "_repaint_timer"):
+            self._repaint_timer.start()
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange and hasattr(self, "_repaint_timer"):
+            self._repaint_timer.start()
+
+    def _repaint_web_area(self) -> None:
+        """Force QtWebEngine to re-layout after the view moved or resized.
+
+        Chromium sometimes keeps painting at the previous offset, which looks
+        like the page sliding to the right while the left part stays empty.
+        A one-pixel resize makes the render widget recreate its surface.
+        """
+        view = self.current_view()
+        if view is None:
+            return
+        try:
+            size = view.size()
+            if size.width() > 8 and size.height() > 8:
+                view.resize(size.width() + 1, size.height())
+                view.resize(size)
+            view.update()
+        except Exception:
+            pass
 
     def _build_sidebar(self) -> QWidget:
         side = QFrame()
@@ -291,11 +366,14 @@ class MainWindow(QMainWindow):
         self.url_bar = QLineEdit()
         self.url_bar.setObjectName("urlbar")
         self.url_bar.setPlaceholderText("адрес…")
+        self.url_bar.setMinimumWidth(120)
         self.url_bar.returnPressed.connect(self._navigate_from_bar)
         h.addWidget(self.url_bar, 1)
 
-        self.usage_chip = QLabel("— / —")
+        self.usage_chip = QLabel("—/—")
         self.usage_chip.setObjectName("chip")
+        self.usage_chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._fit_usage_chip()
         h.addWidget(self.usage_chip)
 
         self.transfer_btn = QPushButton("⇄ Перенос")
@@ -345,6 +423,12 @@ class MainWindow(QMainWindow):
         self.banner_reset.setObjectName("ghost")
         self.banner_reset.setToolTip("Сбросить состояние сессии")
         self.banner_reset.clicked.connect(self._banner_reset_clicked)
+        # The label switches between "Сбросить статус" and "Сбросить счётчик";
+        # reserve the wider one so the banner buttons never jump.
+        self.banner_reset.ensurePolished()
+        self.banner_reset.setMinimumWidth(
+            self.banner_reset.fontMetrics().horizontalAdvance("Сбросить счётчик") + 34
+        )
         close_btn = QPushButton("✕")
         close_btn.setObjectName("ghost")
         close_btn.setFixedWidth(28)
@@ -1020,9 +1104,10 @@ class MainWindow(QMainWindow):
     def _sync_header(self) -> None:
         session = self.store.get(self.current_sid or "")
         if session is None:
-            self.usage_chip.setText("— / —")
-            self.usage_chip.setProperty("tone", "")
-            self._restyle(self.usage_chip)
+            self.usage_chip.setText("—/—")
+            if self.usage_chip.property("tone") != "":
+                self.usage_chip.setProperty("tone", "")
+                self._restyle(self.usage_chip)
             return
         limit = self.settings.context_limit
         used = session.used_context_tokens
@@ -1034,7 +1119,9 @@ class MainWindow(QMainWindow):
             self.usage_chip.setText(f"—/{human_tokens(limit)}")
         state = self.effective_state(session)
         tone = "danger" if state == STATE_BLOCKED else ("warn" if state in (STATE_WARN, STATE_LIMITED) else "")
-        self.usage_chip.setProperty("tone", tone)
+        if self.usage_chip.property("tone") != tone:
+            self.usage_chip.setProperty("tone", tone)
+            self._restyle(self.usage_chip)
         measured = (
             f"Контекст: ~{used} из {limit} токенов "
             f"(после последнего сброса счётчика). "
@@ -1046,8 +1133,19 @@ class MainWindow(QMainWindow):
             + measured
             + f"Отправлено сегодня: {session.usage_count} сообщ."
         )
-        self.usage_chip.setMinimumWidth(self.usage_chip.sizeHint().width() + 2)
-        self._restyle(self.usage_chip)
+
+    def _fit_usage_chip(self) -> None:
+        """Keep the token chip at a constant width so it never wobbles.
+
+        The text grows from "0/128K" to "112K/128K"; sizing the label from its
+        current text on every poll moved the whole toolbar. The widest value
+        the app can show ("0000K/0000K") fixes the width once and for all.
+        """
+        chip = self.usage_chip
+        chip.ensurePolished()
+        width = chip.fontMetrics().horizontalAdvance("0000K/0000K") + 26
+        if chip.width() != width:
+            chip.setFixedWidth(width)
 
     def _update_banner(self) -> None:
         session = self.store.get(self.current_sid or "")
@@ -1061,8 +1159,16 @@ class MainWindow(QMainWindow):
             return
 
         limit = self.settings.context_limit
+
+        def set_banner_state(value: str) -> None:
+            # Re-polishing the banner style on every poll is pointless and can
+            # flicker; only touch it when the state actually changes.
+            if self.banner.property("state") != value:
+                self.banner.setProperty("state", value)
+                self._restyle(self.banner)
+
         if state == STATE_BLOCKED:
-            self.banner.setProperty("state", "danger")
+            set_banner_state("danger")
             self.banner_title.setText("Сессия недоступна — лимит исчерпан")
             reason = f" Причина: {session.status_reason}." if session.status_reason else ""
             self.banner_text.setText(
@@ -1074,7 +1180,7 @@ class MainWindow(QMainWindow):
             self.banner_reset.setToolTip("Сбросить состояние сессии")
             self.banner_reset.show()
         elif state == STATE_LIMITED:
-            self.banner.setProperty("state", "warn")
+            set_banner_state("warn")
             self.banner_title.setText("Временное ограничение запросов")
             self.banner_text.setText(
                 f"«{session.name}»: сервер ответил 429 (слишком много запросов). "
@@ -1085,7 +1191,7 @@ class MainWindow(QMainWindow):
             self.banner_reset.setToolTip("Сбросить состояние сессии")
             self.banner_reset.show()
         else:
-            self.banner.setProperty("state", "warn")
+            set_banner_state("warn")
             self.banner_title.setText("Контекст подходит к концу")
             self.banner_text.setText(
                 f"«{session.name}»: ~{human_tokens(session.used_context_tokens)} из "
@@ -1097,7 +1203,6 @@ class MainWindow(QMainWindow):
             self.banner_reset.setToolTip("Обнулить счётчик токенов этой сессии")
             self.banner_reset.show()
 
-        self._restyle(self.banner)
         self.banner.show()
 
     def _dismiss_banner(self) -> None:

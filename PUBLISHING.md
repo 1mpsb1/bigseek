@@ -39,7 +39,7 @@ GitHub не принимает файлы больше 100 МБ, а папка `
 cd C:\Users\vitaliy\Documents\Default Project\BigSeek-Desktop
 git init
 git add .
-git commit -m "BigSeek Desktop 1.2.0"
+git commit -m "BigSeek Desktop 1.2.1"
 git branch -M main
 git remote add origin https://github.com/ВАШ_ЛОГИН/BigSeek-Desktop.git
 git push -u origin main
@@ -53,7 +53,7 @@ git status
 
 В списке не должно быть `dist`, `build`, `release`, `data`, `__pycache__`.
 
-## 3. Выложить готовый релиз 1.2.0
+## 3. Выложить готовый релиз 1.2.1
 
 Соберите файлы (если ещё не собраны):
 
@@ -63,14 +63,14 @@ release.bat
 
 В папке `release` появятся:
 
-- `BigSeek-Desktop-1.2.0-setup.exe`
-- `BigSeek-Desktop-1.2.0-portable.zip`
+- `BigSeek-Desktop-1.2.1-setup.exe`
+- `BigSeek-Desktop-1.2.1-portable.zip`
 - `SHA256SUMS.txt`
 
 На GitHub: **Releases → Draft a new release** →
 
-1. **Choose a tag** → впишите `v1.2.0` → **Create new tag on publish**.
-2. Заголовок: `BigSeek Desktop 1.2.0`.
+1. **Choose a tag** → впишите `v1.2.1` → **Create new tag on publish**.
+2. Заголовок: `BigSeek Desktop 1.2.1`.
 3. Прикрепите три файла из `release` (перетащите в поле «Attach binaries»).
 4. Опубликуйте.
 
@@ -88,8 +88,8 @@ Workflow `.github/workflows/build.yml` уже настроен:
 То есть в следующий раз достаточно:
 
 ```bat
-git tag v1.2.0
-git push origin v1.2.0
+git tag v1.2.1
+git push origin v1.2.1
 ```
 
 Версию в `version.txt` желательно обновить заранее (тег её переопределяет, но так
