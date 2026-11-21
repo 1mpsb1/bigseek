@@ -288,20 +288,29 @@ MONITOR_JS = r"""
       chars += t.length;
       messages += 1;
     }
-    if (!chars) {
-      nodes = document.querySelectorAll('[data-message-author-role], .ds-markdown');
+    if (!messages) {
+      // Some builds only tag the message roots with a role attribute.
+      nodes = document.querySelectorAll('[data-message-author-role]');
       for (i = 0; i < nodes.length; i++) {
-        t = nodes[i].innerText || "";
+        n = nodes[i];
+        var up = n.parentElement;
+        if (up && up.closest && up.closest('[data-message-author-role]')) { continue; }
+        t = n.innerText || "";
         if (t.trim().length < 2) { continue; }
         chars += t.length;
         messages += 1;
       }
     }
-    if (!chars) {
-      chars = (document.body ? (document.body.innerText || "") : "").length;
-    }
-    // Rough token estimate: ~2.5 chars per token for mixed RU/EN text.
-    var val = { chars: chars, messages: messages, tokens: Math.round(chars / 2.5) };
+    // Deliberately no ".ds-markdown" or document.body fallback: those count
+    // partial blocks or the whole UI and made the counter jump (60K -> 30K)
+    // while the page was still settling. Without message nodes we report
+    // "not measured" and keep the previous value.
+    var val = {
+      chars: chars,
+      messages: messages,
+      tokens: Math.round(chars / 2.5),
+      measured: messages > 0
+    };
     st.vol = { at: Date.now(), val: val };
     return val;
   }
@@ -326,7 +335,8 @@ MONITOR_JS = r"""
       resetText: st.resetText,
       ctxChars: vol.chars,
       ctxTokens: vol.tokens,
-      ctxMessages: vol.messages
+      ctxMessages: vol.messages,
+      ctxMeasured: !!vol.measured
     };
   };
 })();

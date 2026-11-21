@@ -965,9 +965,12 @@ class MainWindow(QMainWindow):
 
         # Context size is the real limit of a chat: tokens grow with every
         # message, while a message counter says nothing about the 128K window.
+        # Only trust a scan that actually found message nodes: during page
+        # loads the DOM is partial and used to report wildly different values.
         ctx_tokens = int(result.get("ctxTokens") or 0)
         ctx_chars = int(result.get("ctxChars") or 0)
-        if ctx_tokens > 0 and (
+        ctx_ok = bool(result.get("ctxMeasured")) and ctx_tokens > 0
+        if ctx_ok and (
             abs(ctx_tokens - session.context_tokens) > 40
             or now - session.context_at > 60
         ):

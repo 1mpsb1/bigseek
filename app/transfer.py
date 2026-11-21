@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, QTimer, QUrl, pyqtSignal
 
 from .prompts import SUMMARY_PLACEHOLDER
 
@@ -480,7 +480,7 @@ class AutoTransfer(QObject):
                 then()
                 return
             if (time.time() - started) * 1000 > COMPOSER_TIMEOUT_MS:
-                self._page_url(sid, self._composer_missing)
+                self._page_url(sid, lambda url: self._composer_missing(sid, url))
                 return
             self._after(600, lambda: self._wait_composer(sid, then))
 
@@ -498,15 +498,16 @@ class AutoTransfer(QObject):
 
         page.runJavaScript("location.href", got)
 
-    def _composer_missing(self, url: str) -> None:
+    def _composer_missing(self, sid: str, url: str) -> None:
+        name = self._name_of(sid)
         if "/sign_in" in url or "/login" in url:
             self._fail(
-                f"В сессии «{self._source_name}» открыта страница входа. "
+                f"В сессии «{name}» открыта страница входа. "
                 "Войдите в аккаунт и повторите перенос."
             )
         else:
             self._fail(
-                f"Не нашёл поле ввода в сессии «{self._source_name}». "
+                f"Не нашёл поле ввода в сессии «{name}». "
                 "Убедитесь, что открыт чат, а не страница входа или ошибки."
             )
 
@@ -697,12 +698,8 @@ class AutoTransfer(QObject):
                     "Промты скопированы в буфер обмена — можно перенести вручную."
                 )
             self._summary = text
-            self._emit("Конспект получен. Переключаюсь на целевую сессию…")
-            try:
-                self.window.activate_session(self.target_sid)
-            except Exception:
-                pass
-            self._wait_composer(self.target_sid, self._send_resume)
+            self._emit("Конспект получен. Открываю новый чат в целевой сессии…")
+            self._open_new_chat(self.target_sid, self._send_resume)
 
         anchor = ""
         for line in reversed(self.compact_text.strip().splitlines()):
@@ -717,6 +714,53 @@ class AutoTransfer(QObject):
         )
 
     # ------------------------------------------------------ step 4: resume
+    def _open_new_chat(self, sid: str, then) -> None:
+        """Navigate the target session to its home screen: a fresh chat.
+
+        The summary must never be appended to whatever conversation happened
+        to be open in the target, so the composer is only probed after the
+        navigation has really committed.
+        """
+        view = None
+        try:
+            self.window.activate_session(sid)
+            view = self.window.views.get(sid)
+        except Exception:
+            pass
+        if view is None:
+            return self._wait_composer(sid, then)
+        page = view.page()
+        if page is None:
+            return self._wait_composer(sid, then)
+
+        root = str(getattr(self.window.settings, "domain", "") or "")
+        state = {"done": False}
+
+        def proceed(_ok: bool = False) -> None:
+            if state["done"]:
+                return
+            state["done"] = True
+            try:
+                view.loadFinished.disconnect(proceed)
+            except Exception:
+                pass
+            self._wait_composer(sid, then)
+
+        def navigate(current) -> None:
+            current = str(current or "")
+            if root and current.rstrip("/") == root.rstrip("/"):
+                # Already on the empty "new chat" screen.
+                return self._wait_composer(sid, then)
+            try:
+                view.loadFinished.connect(proceed)
+            except Exception:
+                return self._wait_composer(sid, then)
+            view.setUrl(QUrl(root))
+            # Watchdog: a failed or skipped navigation must not stall us.
+            self._after(15000, proceed)
+
+        page.runJavaScript("location.href", navigate)
+
     def _send_resume(self) -> None:
         resume = self.resume_template.replace(SUMMARY_PLACEHOLDER, self._summary)
         self._emit(f"Отправляю конспект в «{self._target_name}»…")

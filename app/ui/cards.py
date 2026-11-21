@@ -4,7 +4,7 @@ import zlib
 from datetime import datetime
 
 from PyQt6.QtCore import QPoint, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFontMetrics
+from PyQt6.QtGui import QColor, QPainter
 from PyQt6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QProgressBar,
     QSizePolicy,
+    QStyleOption,
     QVBoxLayout,
     QWidget,
 )
@@ -39,6 +40,48 @@ BADGES = {
     "ok": ("", "muted"),
 }
 
+# Long badges steal the whole name row when the sidebar is narrow, so short
+# variants are used there. The full text stays in the tooltip.
+COMPACT_BADGES = {
+    "blocked": ("ЛИМИТ", "danger"),
+    "limited": ("429", "warn"),
+    "exhausted": ("АРХИВ", "muted"),
+}
+
+BADGE_COMPACT_WIDTH = 220
+
+BLOCKED_OPACITY = 0.55
+
+
+class ElidedLabel(QLabel):
+    """A label that shortens its text when painted instead of in resizeEvent.
+
+    Eliding at paint time keeps the widget's size hint constant, so a card
+    never triggers a layout round-trip (text -> size hint -> resize -> new
+    text) when the sidebar is narrowed or a badge appears.
+    """
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(text, parent)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        option = QStyleOption()
+        option.initFrom(self)
+        text = self.fontMetrics().elidedText(
+            self.text(), Qt.TextElideMode.ElideRight, self.contentsRect().width()
+        )
+        self.style().drawItemText(
+            painter,
+            self.contentsRect(),
+            int(self.alignment()) | int(Qt.TextFlag.TextSingleLine),
+            option.palette,
+            self.isEnabled(),
+            text,
+            self.foregroundRole(),
+        )
+
 
 class SessionCard(QFrame):
     activated = pyqtSignal(str)
@@ -47,8 +90,8 @@ class SessionCard(QFrame):
     def __init__(self, session_id: str, parent=None):
         super().__init__(parent)
         self.session_id = session_id
-        self._full_name = "Сессия"
-        self._sub_text = ""
+        self._bar_color = ""
+        self._glow_key: tuple | None = None
         self.setObjectName("sessionCard")
         self.setProperty("active", "false")
         self.setProperty("state", "ok")
@@ -82,20 +125,18 @@ class SessionCard(QFrame):
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         top.setSpacing(6)
-        self.name_label = QLabel("Сессия")
+        self.name_label = ElidedLabel("Сессия")
         self.name_label.setObjectName("cardName")
+        self.name_label.setMinimumWidth(48)
         self.badge = QLabel("")
         self.badge.setObjectName("badge")
         self.badge.hide()
         top.addWidget(self.name_label, 1)
         top.addWidget(self.badge, 0, Qt.AlignmentFlag.AlignRight)
 
-        self.sub_label = QLabel("")
+        self.sub_label = ElidedLabel("")
         self.sub_label.setObjectName("cardSub")
         self.sub_label.setMinimumWidth(0)
-        self.sub_label.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
-        )
 
         self.bar = QProgressBar()
         self.bar.setRange(0, 100)
@@ -108,9 +149,22 @@ class SessionCard(QFrame):
         col.addWidget(self.bar)
         root.addLayout(col, 1)
 
+        # Graphics effects are created once and only toggled afterwards:
+        # reinstalling them on every refresh (the poll runs every few seconds)
+        # eventually corrupts the card painting in Qt.
+        self._glow = QGraphicsDropShadowEffect(self)
+        self._glow.setOffset(0, 0)
+        self._glow.setEnabled(False)
+        self.setGraphicsEffect(self._glow)
+
+        self._opacity = QGraphicsOpacityEffect(self.inner)
+        self._opacity.setOpacity(BLOCKED_OPACITY)
+        self._opacity.setEnabled(False)
+        self.inner.setGraphicsEffect(self._opacity)
+
     def bind(self, session: Session, state: str, limit: int, active: bool) -> None:
         self.avatar.setText((session.name.strip()[:1] or "?").upper())
-        self._full_name = session.name
+        self.name_label.setText(session.name)
         self.name_label.setToolTip(session.name)
 
         limit = max(0, int(limit))
@@ -132,28 +186,40 @@ class SessionCard(QFrame):
                     else f"сброс {reset_dt:%d.%m %H:%M}"
                 )
                 text = f"{text} · {reset_txt}"
-        self._sub_text = text
-        pct = 0 if limit <= 0 else int(round(min(1.0, (used or 0) / limit) * 100))
-        self.bar.setValue(pct)
-        color = STATE_COLORS.get(state, "#4d6bfe")
-        self.bar.setStyleSheet(f"QProgressBar::chunk {{ background: {color}; border-radius: 2px; }}")
+        self.sub_label.setText(text)
+        self.sub_label.setToolTip(text)
 
-        text, tone = BADGES.get(state, ("", "muted"))
-        self.badge.setText(text)
-        self.badge.setProperty("tone", tone)
+        pct = 0 if limit <= 0 else int(round(min(1.0, (used or 0) / limit) * 100))
+        if self.bar.value() != pct:
+            self.bar.setValue(pct)
+        color = STATE_COLORS.get(state, "#4d6bfe")
+        if color != self._bar_color:
+            self._bar_color = color
+            self.bar.setStyleSheet(
+                f"QProgressBar::chunk {{ background: {color}; border-radius: 2px; }}"
+            )
+
+        tone = BADGES.get(state, ("", "muted"))[1]
+        if self.badge.property("tone") != tone:
+            self.badge.setProperty("tone", tone)
+            self.badge.style().unpolish(self.badge)
+            self.badge.style().polish(self.badge)
+
+        active_value = "true" if active else "false"
+        changed = self.property("state") != state or self.property("active") != active_value
+        if changed:
+            self.setProperty("state", state)
+            self.setProperty("active", active_value)
+            self.style().unpolish(self)
+            self.style().polish(self)
+        self._fit_badge()
         self.badge.setToolTip(
             "Контекст почти заполнен" if state == "warn"
             else "Временное ограничение запросов" if state == "limited"
             else "Лимит исчерпан" if state == "blocked"
             else ""
         )
-        self.badge.setVisible(bool(text))
-        self.badge.style().unpolish(self.badge)
-        self.badge.style().polish(self.badge)
-        self._relayout_text()
 
-        self.setProperty("state", state)
-        self.setProperty("active", "true" if active else "false")
         if state == "blocked":
             tip = "Лимит исчерпан, но открыть сессию можно — нажмите на карточку."
             if reset_txt:
@@ -167,34 +233,26 @@ class SessionCard(QFrame):
             )
         else:
             self.setToolTip("")
-        self.style().unpolish(self)
-        self.style().polish(self)
-        self._apply_glow(state, active)
+        self._apply_glow(state, active_value == "true")
         self._apply_opacity(state)
 
-    def _relayout_text(self) -> None:
-        """Keep the name and the metrics line inside the draggable sidebar."""
-        name_metrics = QFontMetrics(self.name_label.font())
-        reserved = 30 + 10 + 20 + 12  # avatar, spacing, margins, breathing room
-        if self.badge.isVisible() and self.badge.text():
-            reserved += self.badge.sizeHint().width() + 6
-        name_width = max(70, self.width() - reserved)
-        self.name_label.setText(
-            name_metrics.elidedText(
-                self._full_name, Qt.TextElideMode.ElideRight, name_width
-            )
-        )
-        sub_metrics = QFontMetrics(self.sub_label.font())
-        sub_width = max(40, self.width() - 60)
-        self.sub_label.setText(
-            sub_metrics.elidedText(
-                self._sub_text, Qt.TextElideMode.ElideRight, sub_width
-            )
-        )
+    def _fit_badge(self) -> None:
+        """Use a short badge when the card is too narrow for the full one."""
+        state = str(self.property("state") or "ok")
+        full = BADGES.get(state, ("", "muted"))[0]
+        compact = COMPACT_BADGES.get(state, (full, ""))[0]
+        # Before the first layout pass the width is 0: pick the short badge so
+        # the card's minimum width does not grow and the sidebar can still be
+        # dragged down to 200 px.
+        use_compact = self.width() <= 0 or self.width() < BADGE_COMPACT_WIDTH
+        text = compact if (full and use_compact) else full
+        if self.badge.text() != text:
+            self.badge.setText(text)
+        self.badge.setVisible(bool(text))
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        self._relayout_text()
+        self._fit_badge()
 
     def _apply_glow(self, state: str, active: bool) -> None:
         color = None
@@ -205,23 +263,22 @@ class SessionCard(QFrame):
         elif state in ("warn", "limited"):
             color, blur = QColor(255, 255, 255, 80), 16
         if color is None:
-            self.setGraphicsEffect(None)
+            if self._glow.isEnabled():
+                self._glow.setEnabled(False)
+            self._glow_key = None
             return
-        effect = QGraphicsDropShadowEffect(self)
-        effect.setBlurRadius(blur)
-        effect.setOffset(0, 0)
-        effect.setColor(color)
-        self.setGraphicsEffect(effect)
+        key = (state, active, color.rgba(), blur)
+        if key == self._glow_key and self._glow.isEnabled():
+            return
+        self._glow.setBlurRadius(blur)
+        self._glow.setColor(color)
+        self._glow.setEnabled(True)
+        self._glow_key = key
 
     def _apply_opacity(self, state: str) -> None:
-        if state == "blocked":
-            effect = self.inner.graphicsEffect()
-            if not isinstance(effect, QGraphicsOpacityEffect):
-                effect = QGraphicsOpacityEffect(self.inner)
-                self.inner.setGraphicsEffect(effect)
-            effect.setOpacity(0.55)
-        elif self.inner.graphicsEffect() is not None:
-            self.inner.setGraphicsEffect(None)
+        blocked = state == "blocked"
+        if self._opacity.isEnabled() != blocked:
+            self._opacity.setEnabled(blocked)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:

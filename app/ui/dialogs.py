@@ -340,27 +340,28 @@ class TransferDialog(QDialog):
         root.addWidget(title)
         status = QLabel(
             f"Статус: {STATE_TITLES.get(window.effective_state(session), '')} · "
-            f"~{human_tokens(session.used_context_tokens)} из "
-            f"{human_tokens(window.settings.context_limit)} токенов "
-            f"(после последнего сброса счётчика) · "
+            f"≈{human_tokens(session.used_context_tokens)} из "
+            f"{human_tokens(window.settings.context_limit)} токенов · "
             f"{session.usage_count} сообщений сегодня"
         )
         status.setObjectName("sectionHint")
+        status.setWordWrap(True)
         root.addWidget(status)
 
         info = QLabel(
             "Приложение само отправит промт сжатия в эту сессию, дождётся ответа ассистента, "
             "вырежет блок между строками ===КОНСПЕКТ=== и ===КОНЕЦ=== и отправит его первым "
-            "сообщением в выбранную сессию. Руками ничего копировать не нужно."
+            "сообщением в новый чат выбранной сессии. Руками ничего копировать не нужно."
         )
         info.setObjectName("bannerText")
         info.setWordWrap(True)
         root.addWidget(info)
 
         warn = QLabel(
-            "Будет отправлено по одному сообщению в каждой сессии — это расходует лимит. "
-            "Обе сессии должны быть открыты и с выполненным входом; если сайт попросит "
-            "капчу, решите её в открывшемся окне."
+            "В целевой сессии всегда открывается новый чат, поэтому конспект не попадёт "
+            "в старую переписку. Будет отправлено по одному сообщению в каждой сессии — "
+            "это расходует лимит. Обе сессии должны быть открыты и с выполненным входом; "
+            "если сайт попросит капчу, решите её в открывшемся окне."
         )
         warn.setObjectName("sectionHint")
         warn.setWordWrap(True)
