@@ -8,6 +8,7 @@
 | Путь | В git | Зачем |
 |---|---|---|
 | `app/`, `main.py`, `assets/` | да | исходный код |
+| `android/` (кроме `android/build`, `android/keystore`) | да | исходники Android-приложения |
 | `installer/`, `scripts/`, `*.bat` | да | сборка exe и установщика |
 | `.github/workflows/build.yml` | да | автоматическая сборка релизов |
 | `dist/`, `build/` | нет | локальная сборка (~516 МБ) |
@@ -20,7 +21,7 @@ GitHub не принимает файлы больше 100 МБ, а папка `
 
 ## 1. Создать репозиторий
 
-На GitHub: **New repository** → имя, например `BigSeek-Desktop` → **Public** →
+На GitHub: **New repository** → имя `bigseek` → **Public** →
 **не** добавляйте README, .gitignore и лицензию (они уже есть) → **Create repository**.
 
 ## 2. Залить файлы
@@ -39,9 +40,9 @@ GitHub не принимает файлы больше 100 МБ, а папка `
 cd C:\Users\vitaliy\Documents\Default Project\BigSeek-Desktop
 git init
 git add .
-git commit -m "BigSeek Desktop 1.2.1"
+git commit -m "BigSeek 1.2.5"
 git branch -M main
-git remote add origin https://github.com/ВАШ_ЛОГИН/BigSeek-Desktop.git
+git remote add origin https://github.com/1mpsb1/bigseek.git
 git push -u origin main
 ```
 
@@ -53,7 +54,7 @@ git status
 
 В списке не должно быть `dist`, `build`, `release`, `data`, `__pycache__`.
 
-## 3. Выложить готовый релиз 1.2.1
+## 3. Выложить готовый релиз 1.2.5
 
 Соберите файлы (если ещё не собраны):
 
@@ -63,18 +64,19 @@ release.bat
 
 В папке `release` появятся:
 
-- `BigSeek-Desktop-1.2.1-setup.exe`
-- `BigSeek-Desktop-1.2.1-portable.zip`
-- `SHA256SUMS.txt`
+- `BigSeek-Desktop-1.2.5-setup.exe`
+- `BigSeek-Desktop-1.2.5-portable.zip`
+- `BigSeek-Android-1.0.4.apk`
+- `SHA256SUMS.txt`, `SHA256SUMS-android.txt`
 
 На GitHub: **Releases → Draft a new release** →
 
-1. **Choose a tag** → впишите `v1.2.1` → **Create new tag on publish**.
-2. Заголовок: `BigSeek Desktop 1.2.1`.
-3. Прикрепите три файла из `release` (перетащите в поле «Attach binaries»).
+1. **Choose a tag** → впишите `v1.2.5` → **Create new tag on publish**.
+2. Заголовок: `BigSeek 1.2.5`.
+3. Прикрепите файлы из `release` (перетащите в поле «Attach binaries»).
 4. Опубликуйте.
 
-Ссылки вида `https://github.com/ВАШ_ЛОГИН/BigSeek-Desktop/releases/latest` после этого
+Ссылки вида `https://github.com/1mpsb1/bigseek/releases/latest` после этого
 можно вставлять в README и раздавать пользователям.
 
 ## 4. Автоматическая сборка
@@ -88,8 +90,8 @@ Workflow `.github/workflows/build.yml` уже настроен:
 То есть в следующий раз достаточно:
 
 ```bat
-git tag v1.2.1
-git push origin v1.2.1
+git tag v1.2.5
+git push origin v1.2.5
 ```
 
 Версию в `version.txt` желательно обновить заранее (тег её переопределяет, но так
@@ -97,11 +99,6 @@ git push origin v1.2.1
 
 ## 5. Мелочи, которые стоит поправить
 
-- В `CHANGELOG.md` ссылка `https://github.com/OWNER/REPO/...` — замените `OWNER/REPO`
-  на свой репозиторий.
-- В `LICENSE` при желании укажите своё имя вместо «BigSeek Desktop contributors».
-  Лицензия MIT разрешает использовать, изменять и распространять проект; если нужна
-  другая — замените файл.
 - Скриншоты лежат в `docs/`; после правок интерфейса их стоит обновить.
 - Установщик не подписан. Если планируете широкую раздачу, получите сертификат
   code signing и подпишите `dist\...\BigSeek Desktop.exe` и `release\...-setup.exe`
