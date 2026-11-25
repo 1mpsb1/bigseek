@@ -275,8 +275,8 @@ MONITOR_JS = r"""
   } catch (e) {}
 
   function volume() {
-    if (st.vol && Date.now() - st.vol.at < 15000) { return st.vol.val; }
-    var chars = 0, messages = 0;
+    if (st.vol && Date.now() - st.vol.at < 3000) { return st.vol.val; }
+    var chars = 0, messages = 0, items = {};
     var nodes = document.querySelectorAll(".ds-message");
     var i, n, t;
     for (i = 0; i < nodes.length; i++) {
@@ -287,6 +287,13 @@ MONITOR_JS = r"""
       if (t.trim().length < 2) { continue; }
       chars += t.length;
       messages += 1;
+      // The chat is a virtual list: only a few messages live in the DOM and
+      // the visible window slides as the conversation grows. Remember every
+      // row by its stable key, otherwise the total freezes as soon as the
+      // window moves and small messages look uncounted.
+      var row = n.closest ? n.closest("[data-virtual-list-item-key]") : null;
+      var rowKey = row ? row.getAttribute("data-virtual-list-item-key") : "";
+      if (rowKey) { items[rowKey] = (items[rowKey] || 0) + t.length; }
     }
     if (!messages) {
       // Some builds only tag the message roots with a role attribute.
@@ -309,10 +316,22 @@ MONITOR_JS = r"""
       chars: chars,
       messages: messages,
       tokens: Math.round(chars / 2.5),
-      measured: messages > 0
+      measured: messages > 0,
+      items: items
     };
     st.vol = { at: Date.now(), val: val };
     return val;
+  }
+
+  function chatKey() {
+    try {
+      var path = location.pathname || "";
+      var m = path.match(/\/a\/chat\/s\/([^\/?#]+)/);
+      if (m) { return m[1]; }
+      m = path.match(/\/chat\/([^\/?#]+)/);
+      if (m && m[1] !== "s") { return m[1]; }
+    } catch (e) {}
+    return "";
   }
 
   window.__dsmScan = function () {
@@ -322,6 +341,7 @@ MONITOR_JS = r"""
     try { vol = volume(); } catch (e) {}
     return {
       url: location.href,
+      chat: chatKey(),
       sentApi: st.sentApi,
       sentKey: st.sentKey,
       lastSendAt: st.lastSendAt,
@@ -336,6 +356,7 @@ MONITOR_JS = r"""
       ctxChars: vol.chars,
       ctxTokens: vol.tokens,
       ctxMessages: vol.messages,
+      ctxItems: vol.items || {},
       ctxMeasured: !!vol.measured
     };
   };

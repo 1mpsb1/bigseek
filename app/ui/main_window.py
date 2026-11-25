@@ -39,6 +39,7 @@ from ..sessions import (
     Session,
     SessionStore,
     human_age,
+    format_count,
     human_tokens,
     today_str,
 )
@@ -85,6 +86,7 @@ class MainWindow(QMainWindow):
         self._popups: list[QWebEngineView] = []
         self._fullscreen_view: QWebEngineView | None = None
         self._transfer: AutoTransfer | None = None
+        self._auto_transfer_attempted: set[str] = set()
         self.current_sid: str | None = None
 
         self.poll_timer = QTimer(self)
@@ -664,6 +666,7 @@ class MainWindow(QMainWindow):
         session.status_reset_at = time.time()
         session.limit_reset_at = 0.0
         session.limit_reset_text = ""
+        self._auto_transfer_attempted.discard(sid)
         self.store.save()
         self.refresh_cards()
         self._update_banner()
@@ -687,7 +690,7 @@ class MainWindow(QMainWindow):
             self.reset_status(sid)
 
     def _auto_reset_limit(self, session: Session, notify: bool = False) -> None:
-        """The site announced a reset time and it has passed — clear the block."""
+        """The announced reset time has passed (or the timeout expired) — clear everything."""
         session.status = STATE_OK
         session.status_reason = ""
         session.status_reset_at = time.time()
@@ -695,21 +698,33 @@ class MainWindow(QMainWindow):
         session.limit_reset_text = ""
         session.reset_usage()
         session.reset_context()
+        self._auto_transfer_attempted.discard(session.id)
         self.store.save()
         if notify and session.id == self.current_sid:
             self.statusBar().showMessage(
                 f"Лимит сессии «{session.name}» обновлён, счётчик сброшен", 6000
             )
 
+    def _auto_reset_deadline(self) -> float:
+        hours = max(1, min(72, int(self.settings.auto_reset_hours)))
+        return hours * 3600.0
+
     def _check_limit_resets(self) -> bool:
+        if not self.settings.auto_reset_status:
+            return False
         now = time.time()
+        timeout = self._auto_reset_deadline()
         changed = False
         for session in self.store.sessions:
-            if session.status not in (STATE_BLOCKED, STATE_LIMITED):
+            if session.status not in (STATE_BLOCKED, STATE_LIMITED, STATE_EXHAUSTED):
                 continue
             due = session.limit_reset_at > 0 and session.limit_reset_at <= now
+            # A transferred ("перенесена") session has no site reset time, so
+            # it is released by the configurable timeout instead of staying
+            # exhausted forever.
+            stale = session.status_at > 0 and now - session.status_at >= timeout
             new_day = session.limit_reset_at <= 0 and session.usage_date != today_str()
-            if due or new_day:
+            if due or stale or new_day:
                 self._auto_reset_limit(
                     session, notify=session.id == self.current_sid
                 )
@@ -755,12 +770,20 @@ class MainWindow(QMainWindow):
             self._sync_header()
 
     def effective_state(self, session: Session) -> str:
-        if (
-            session.status in (STATE_BLOCKED, STATE_LIMITED)
-            and session.limit_reset_at > 0
-            and session.limit_reset_at <= time.time()
-        ):
-            self._auto_reset_limit(session)
+        if self.settings.auto_reset_status:
+            now = time.time()
+            due = (
+                session.status in (STATE_BLOCKED, STATE_LIMITED)
+                and session.limit_reset_at > 0
+                and session.limit_reset_at <= now
+            )
+            stale = (
+                session.status in (STATE_BLOCKED, STATE_LIMITED, STATE_EXHAUSTED)
+                and session.status_at > 0
+                and now - session.status_at >= self._auto_reset_deadline()
+            )
+            if due or stale:
+                self._auto_reset_limit(session)
         if session.status == STATE_BLOCKED:
             return STATE_BLOCKED
         if session.status == STATE_EXHAUSTED:
@@ -1053,12 +1076,12 @@ class MainWindow(QMainWindow):
         # loads the DOM is partial and used to report wildly different values.
         ctx_tokens = int(result.get("ctxTokens") or 0)
         ctx_chars = int(result.get("ctxChars") or 0)
+        chat_key = str(result.get("chat") or "")
+        ctx_items = result.get("ctxItems")
+        if not isinstance(ctx_items, dict):
+            ctx_items = {}
         ctx_ok = bool(result.get("ctxMeasured")) and ctx_tokens > 0
-        if ctx_ok and (
-            abs(ctx_tokens - session.context_tokens) > 40
-            or now - session.context_at > 60
-        ):
-            session.measure_context(ctx_chars, ctx_tokens)
+        if ctx_ok and session.measure_context(ctx_chars, ctx_tokens, chat_key, ctx_items):
             self._schedule_save()
 
         last429 = float(result.get("last429At") or 0) / 1000.0
@@ -1097,6 +1120,7 @@ class MainWindow(QMainWindow):
             self._set_status(sid, STATE_OK, "")
 
         if sid == self.current_sid:
+            self._maybe_auto_transfer(session)
             self.refresh_cards()
             self._sync_header()
             self._update_banner()
@@ -1113,7 +1137,7 @@ class MainWindow(QMainWindow):
         used = session.used_context_tokens
         if session.context_chars > 0:
             self.usage_chip.setText(
-                f"{human_tokens(used)}/{human_tokens(limit)}"
+                f"{format_count(used)}/{human_tokens(limit)}"
             )
         else:
             self.usage_chip.setText(f"—/{human_tokens(limit)}")
@@ -1123,7 +1147,7 @@ class MainWindow(QMainWindow):
             self.usage_chip.setProperty("tone", tone)
             self._restyle(self.usage_chip)
         measured = (
-            f"Контекст: ~{used} из {limit} токенов "
+            f"Контекст: ~{format_count(used)} из {format_count(limit)} токенов "
             f"(после последнего сброса счётчика). "
             if session.context_chars > 0
             else "Контекст ещё не измерен. "
@@ -1143,7 +1167,12 @@ class MainWindow(QMainWindow):
         """
         chip = self.usage_chip
         chip.ensurePolished()
-        width = chip.fontMetrics().horizontalAdvance("0000K/0000K") + 26
+        limit = max(1, int(self.settings.context_limit or 0))
+        # Exact token counts are shown now, so reserve room for the widest
+        # realistic value plus one extra digit (the counter may pass the limit).
+        digits = max(3, len(str(limit)) + 1)
+        sample = f"{'0' * digits}/{human_tokens(limit)}"
+        width = chip.fontMetrics().horizontalAdvance(sample) + 26
         if chip.width() != width:
             chip.setFixedWidth(width)
 
@@ -1172,8 +1201,7 @@ class MainWindow(QMainWindow):
             self.banner_title.setText("Сессия недоступна — лимит исчерпан")
             reason = f" Причина: {session.status_reason}." if session.status_reason else ""
             self.banner_text.setText(
-                f"«{session.name}» больше не может отправлять сообщения.{reason} "
-                "Сожми контекст и перенеси работу в другую сессию."
+                f"«{session.name}» больше не может отправлять сообщения.{reason}"
                 + self._reset_hint(session)
             )
             self.banner_reset.setText("Сбросить статус")
@@ -1184,7 +1212,7 @@ class MainWindow(QMainWindow):
             self.banner_title.setText("Временное ограничение запросов")
             self.banner_text.setText(
                 f"«{session.name}»: сервер ответил 429 (слишком много запросов). "
-                "Подожди пару минут или перенеси контекст в другую сессию."
+                "Подожди пару минут."
                 + self._reset_hint(session)
             )
             self.banner_reset.setText("Сбросить статус")
@@ -1194,7 +1222,7 @@ class MainWindow(QMainWindow):
             set_banner_state("warn")
             self.banner_title.setText("Контекст подходит к концу")
             self.banner_text.setText(
-                f"«{session.name}»: ~{human_tokens(session.used_context_tokens)} из "
+                f"«{session.name}»: ~{format_count(session.used_context_tokens)} из "
                 f"{human_tokens(limit)} токенов "
                 f"({session.usage_count} сообщений сегодня). "
                 "Самое время упаковать контекст, пока сессия ещё отвечает."
@@ -1203,6 +1231,12 @@ class MainWindow(QMainWindow):
             self.banner_reset.setToolTip("Обнулить счётчик токенов этой сессии")
             self.banner_reset.show()
 
+        # Transferring requires sending the compaction prompt, so it is only
+        # meaningful while the session can still answer. A blocked or
+        # rate-limited session gets the reset action instead of a dead button.
+        can_transfer = state == STATE_WARN
+        self.banner_copy.setVisible(can_transfer)
+        self.banner_transfer.setVisible(can_transfer)
         self.banner.show()
 
     def _dismiss_banner(self) -> None:
@@ -1244,15 +1278,41 @@ class MainWindow(QMainWindow):
             if self.effective_state(s) in (STATE_BLOCKED, STATE_EXHAUSTED):
                 continue
             used = s.used_context_tokens or 0
-            label = f"{s.name} — ≈{human_tokens(used)} токенов"
+            label = f"{s.name} — ≈{format_count(used)} токенов"
             rows.append((used, s.id, label))
         rows.sort(key=lambda r: r[0])
         return [(sid, label) for _used, sid, label in rows]
 
+    def _maybe_auto_transfer(self, session: Session) -> None:
+        """Start the transfer once the chat crosses the configured percentage."""
+        if not self.settings.auto_transfer or self._transfer is not None:
+            return
+        if session.id in self._auto_transfer_attempted:
+            return
+        limit = max(0, int(self.settings.context_limit or 0))
+        percent = max(1, min(99, int(self.settings.auto_transfer_percent or 0)))
+        if limit <= 0 or session.used_context_tokens < limit * percent / 100.0:
+            return
+        if session.status in (STATE_BLOCKED, STATE_LIMITED, STATE_EXHAUSTED):
+            return
+        self._auto_transfer_attempted.add(session.id)
+        targets = self.available_targets(session.id)
+        target_sid = targets[0][0] if targets else None
+        self.statusBar().showMessage(
+            f"Контекст «{session.name}» заполнен на {percent}% — начинаю автоперенос", 8000
+        )
+        self.start_auto_transfer(session.id, target_sid, True)
+
     def open_transfer_dialog(self, sid: str | None = None) -> None:
         sid = sid or self.current_sid
-        if not sid or self.store.get(sid) is None:
+        session = self.store.get(sid or "")
+        if not sid or session is None:
             self.statusBar().showMessage("Сначала выбери сессию", 4000)
+            return
+        if self.effective_state(session) in (STATE_BLOCKED, STATE_LIMITED):
+            self.statusBar().showMessage(
+                "Сессия недоступна — перенос не сработает, пока действует лимит", 6000
+            )
             return
         if self._transfer is not None:
             self.statusBar().showMessage("Перенос уже выполняется", 4000)

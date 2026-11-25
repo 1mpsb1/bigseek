@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..config import APP_AUTHOR, Settings, app_version, normalize_domain
-from ..sessions import STATE_BLOCKED, STATE_EXHAUSTED, STATE_TITLES, Session, human_age, human_tokens
+from ..sessions import STATE_BLOCKED, STATE_EXHAUSTED, STATE_TITLES, Session, format_count, human_age, human_tokens
 from ..web import human_size
 
 
@@ -97,12 +97,43 @@ class SettingsDialog(QDialog):
         self.detect.setChecked(settings.detect_limits)
         lim_form.addRow(self.detect)
 
+        self.auto_reset = QCheckBox("Автоматически сбрасывать статус и счётчик сессии")
+        self.auto_reset.setChecked(settings.auto_reset_status)
+        lim_form.addRow(self.auto_reset)
+
+        self.auto_reset_hours = QSpinBox()
+        self.auto_reset_hours.setRange(1, 72)
+        self.auto_reset_hours.setValue(max(1, int(settings.auto_reset_hours)))
+        self.auto_reset_hours.setSuffix(" ч")
+        self.auto_reset_hours.setToolTip(
+            "Через сколько часов после блокировки или переноса сессия снова станет активной. "
+            "Если сайт сообщил точное время сброса, оно имеет приоритет."
+        )
+        lim_form.addRow("Сбрасывать «перенесена» через", self.auto_reset_hours)
+
+        self.auto_transfer = QCheckBox("Переносить контекст автоматически при заполнении")
+        self.auto_transfer.setChecked(settings.auto_transfer)
+        lim_form.addRow(self.auto_transfer)
+
+        self.auto_transfer_percent = QSpinBox()
+        self.auto_transfer_percent.setRange(30, 99)
+        self.auto_transfer_percent.setValue(max(30, min(99, int(settings.auto_transfer_percent))))
+        self.auto_transfer_percent.setSuffix(" %")
+        lim_form.addRow("Порог автопереноса", self.auto_transfer_percent)
+
+        self.auto_reset.toggled.connect(self.auto_reset_hours.setEnabled)
+        self.auto_reset_hours.setEnabled(self.auto_reset.isChecked())
+        self.auto_transfer.toggled.connect(self.auto_transfer_percent.setEnabled)
+        self.auto_transfer_percent.setEnabled(self.auto_transfer.isChecked())
+
         lim_hint = QLabel(
             "Объём контекста оценивается по тексту переписки (≈2,5 символа на токен) "
             "и сравнивается с контекстным окном модели. Когда порог достигнут, "
             "сессия помечается ⚠ и предлагается перенос. "
             "Настоящие лимиты сайта (сообщение о квоте, сброс, HTTP 429) "
-            "приложение читает со страницы само."
+            "приложение читает со страницы само. "
+            "Автосброс возвращает сессию в работу после указанного срока; "
+            "автоперенос один раз упаковывает контекст и открывает его в другой сессии."
         )
         lim_hint.setObjectName("sectionHint")
         lim_hint.setWordWrap(True)
@@ -157,6 +188,10 @@ class SettingsDialog(QDialog):
             context_limit=self.context_limit.value() * 1000,
             context_warn=self.threshold.value() / 100.0,
             detect_limits=self.detect.isChecked(),
+            auto_reset_status=self.auto_reset.isChecked(),
+            auto_reset_hours=self.auto_reset_hours.value(),
+            auto_transfer=self.auto_transfer.isChecked(),
+            auto_transfer_percent=self.auto_transfer_percent.value(),
             poll_seconds=self.poll.value(),
         )
 
@@ -253,7 +288,7 @@ class SessionManagerDialog(QDialog):
             self.table.setItem(row, 1, QTableWidgetItem(status_text))
             context_limit = self.window.settings.context_limit
             context_text = (
-                f"≈{human_tokens(s.used_context_tokens)} / {human_tokens(context_limit)}"
+                f"≈{format_count(s.used_context_tokens)} / {human_tokens(context_limit)}"
                 if s.context_chars > 0
                 else "—"
             )
@@ -340,7 +375,7 @@ class TransferDialog(QDialog):
         root.addWidget(title)
         status = QLabel(
             f"Статус: {STATE_TITLES.get(window.effective_state(session), '')} · "
-            f"≈{human_tokens(session.used_context_tokens)} из "
+            f"≈{format_count(session.used_context_tokens)} из "
             f"{human_tokens(window.settings.context_limit)} токенов · "
             f"{session.usage_count} сообщений сегодня"
         )

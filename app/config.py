@@ -88,6 +88,14 @@ class Settings:
     sidebar_width: int = 276
     sidebar_visible: bool = True
     detect_limits: bool = True
+    # Clear "blocked"/"exhausted" sessions (and their token counter) once the
+    # announced reset time has passed, or after a configurable number of hours.
+    auto_reset_status: bool = True
+    auto_reset_hours: int = 5
+    # Move the context to another session automatically when the chat reaches
+    # this percentage of the configured context window.
+    auto_transfer: bool = False
+    auto_transfer_percent: int = 90
     poll_seconds: int = 8
     user_agent: str = DEFAULT_USER_AGENT
     last_session_id: str | None = None
@@ -111,6 +119,8 @@ class Settings:
         obj.context_warn = min(0.99, max(0.3, float(obj.context_warn)))
         obj.sidebar_width = max(200, min(560, int(obj.sidebar_width)))
         obj.poll_seconds = max(3, int(obj.poll_seconds))
+        obj.auto_reset_hours = max(1, min(72, int(obj.auto_reset_hours)))
+        obj.auto_transfer_percent = max(30, min(99, int(obj.auto_transfer_percent)))
         if not isinstance(obj.zoom, dict):
             obj.zoom = {}
         return obj

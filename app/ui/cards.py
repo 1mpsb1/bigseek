@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..sessions import Session, human_tokens
+from ..sessions import Session, format_count, human_tokens
 from ..theme import STATE_COLORS
 
 AVATAR_COLORS = [
@@ -171,7 +171,7 @@ class SessionCard(QFrame):
         used = session.used_context_tokens or 0
         measured = session.context_chars > 0
         if limit > 0 and measured:
-            text = f"{human_tokens(used)}/{human_tokens(limit)} · {session.usage_count} сообщ."
+            text = f"{format_count(used)}/{human_tokens(limit)} · {session.usage_count} сообщ."
         elif limit > 0:
             text = f"—/{human_tokens(limit)} · {session.usage_count} сообщ."
         else:

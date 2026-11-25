@@ -55,16 +55,96 @@ class Session:
     context_base_chars: int = 0
     context_reset_at: float = 0.0
     context_at: float = 0.0
+    # Peak volume of every conversation seen in this session. The site only
+    # keeps one chat in the DOM at a time and re-renders it while streaming,
+    # so a plain "current page size" made the counter jump back and forth.
+    context_chats: dict[str, int] = field(default_factory=dict)
+    # Per-chat map of virtual-list row key -> characters in that row. The site
+    # keeps only a handful of messages in the DOM, so the sum of the visible
+    # window stops growing once it slides; remembering every row makes the
+    # counter grow with each new message.
+    context_items: dict[str, dict[str, int]] = field(default_factory=dict)
+    context_chat: str = ""
 
-    def measure_context(self, chars: int, tokens: int) -> None:
+    def measure_context(
+        self,
+        chars: int,
+        tokens: int = 0,
+        chat_key: str = "",
+        items: dict | None = None,
+    ) -> bool:
+        """Remember the biggest volume seen for every chat and sum them up.
+
+        The counter must only grow while the user writes: switching chats or
+        a partial DOM re-render may show fewer messages, but that is not a
+        reason to roll the session counter back. A manual reset stores the
+        current total in ``context_base_chars`` and keeps it as the baseline.
+
+        ``items`` maps the virtual-list row key of every rendered message to
+        its length. The chat is virtualised, so the sum of the visible window
+        alone stops growing as soon as the window slides; remembering each row
+        keeps the total honest.
+
+        Returns True when the stored total changed.
+        """
         chars = max(0, int(chars))
-        self.context_chars = chars
-        self.context_tokens = max(0, int(tokens))
+        key = str(chat_key or "").strip()
+        previous = str(self.context_chat or "")
+
+        # The page switched to the home screen while the old chat was still in
+        # the DOM — ignore it, otherwise the previous chat gets counted twice.
+        if not key and previous:
+            return False
+
+        before = int(self.context_chars or 0)
+
+        chats = dict(self.context_chats or {})
+        if not chats and int(self.context_chars or 0) > 0:
+            # Migration from versions that tracked a single page volume. That
+            # volume belonged to the chat that was on screen last, so seed the
+            # current chat instead of creating a second, unrelated entry.
+            chats[previous or key or "~"] = int(self.context_chars or 0)
+
+        # Home screen -> real chat id: the just-created conversation used to be
+        # measured under "", move its peak to the id instead of duplicating it.
+        if not previous and key and "" in chats:
+            pending = int(chats.pop("", 0))
+            chats[key] = max(pending, int(chats.get(key, 0)))
+
+        chats[key] = max(int(chats.get(key, 0)), chars)
+
+        # Rows seen so far in this chat. A row only ever grows (streaming,
+        # expanding a reasoning block), so keeping the maximum is enough.
+        known = dict((self.context_items or {}).get(key) or {})
+        fresh = items if isinstance(items, dict) else {}
+        for item_key, size in fresh.items():
+            item_key = str(item_key)
+            try:
+                size = max(0, int(size))
+            except (TypeError, ValueError):
+                continue
+            if size > int(known.get(item_key, 0)):
+                known[item_key] = size
+        if known:
+            self.context_items[key] = known
+            chats[key] = max(chats[key], sum(int(v) for v in known.values()))
+
+        # Keep the map bounded without losing counted characters: move the
+        # smallest chats into an archive bucket so the total never drops.
+        while len(chats) > 80:
+            candidates = [k for k in chats if k != "~"]
+            if not candidates:
+                break
+            smallest = min(candidates, key=lambda k: chats[k])
+            moved = int(chats.pop(smallest, 0))
+            chats["~"] = int(chats.get("~", 0)) + moved
+
+        self.context_chats = chats
+        self.context_chars = sum(int(v) for v in chats.values())
+        self.context_tokens = max(0, int(round(self.context_chars / 2.5)))
+        self.context_chat = key
         self.context_at = time.time()
-        if chars < int(self.context_base_chars or 0):
-            # The chat was cleared or switched — start counting the new one
-            # from zero instead of waiting until it outgrows the old baseline.
-            self.context_base_chars = chars
+        return self.context_chars != before or key != previous
 
     @property
     def used_context_chars(self) -> int:
@@ -199,10 +279,10 @@ def human_age(iso: str | None) -> str:
     return dt.strftime("%d.%m %H:%M")
 
 
+def format_count(value: int) -> str:
+    """Thousands separated by spaces: 12 945."""
+    return f"{max(0, int(value or 0)):,}".replace(",", " ")
+
+
 def human_tokens(tokens: int) -> str:
-    tokens = max(0, int(tokens or 0))
-    if tokens >= 10000:
-        return f"{tokens / 1000:.0f}K"
-    if tokens >= 1000:
-        return f"{tokens / 1000:.1f}K"
-    return str(tokens)
+    return format_count(tokens)
